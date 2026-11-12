@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stellplatz-Sammler</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; }
+  header { background: #1f6f4a; color: #fff; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  header h1 { font-size: 18px; margin: 0 12px 0 0; }
+  header label { font-size: 14px; display: flex; align-items: center; gap: 4px; }
+  header input[type=text] { padding: 4px 6px; border-radius: 4px; border: none; }
+  header button { padding: 5px 10px; border: none; border-radius: 4px; cursor: pointer; background: #fff; color: #1f6f4a; font-weight: 600; }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #map { flex: 1; }
+  #side { width: 300px; overflow-y: auto; border-left: 1px solid #ccc; padding: 8px; font-size: 14px; }
+  .item { padding: 6px; border-bottom: 1px solid #eee; cursor: pointer; }
+  .item:hover { background: #f1f7f3; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 8px; color: #fff; margin-left: 4px; }
+  #status { font-size: 13px; margin-left: auto; }
+  .pop { max-width: 260px; font-size: 13px; }
+  .pop img { width: 100%; border-radius: 6px; margin: 4px 0; }
+  .plus { color: #1f7a3a; }
+  .minus { color: #b3261e; }
+  .preis { background: #fff6dc; padding: 2px 6px; border-radius: 4px; display: inline-block; margin: 2px 0; }
+  .klein { color: #666; font-size: 12px; }
+  /* Formular */
+  #formBg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 2000; align-items: center; justify-content: center; }
+  #form { background: #fff; padding: 16px; border-radius: 8px; width: 420px; max-width: 94vw; max-height: 92vh; overflow-y: auto; }
+  #form h2 { margin: 0 0 8px; font-size: 17px; }
+  #form label { display: block; font-size: 13px; margin-top: 8px; }
+  #form input, #form textarea, #form select { width: 100%; padding: 5px; font: inherit; }
+  #form .zeile { display: flex; gap: 8px; }
+  #form .knoepfe { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+  #form button { padding: 6px 12px; cursor: pointer; }
+  @media (max-width: 700px) { #main { flex-direction: column; } #side { width: 100%; height: 35%; border-left: none; border-top: 1px solid #ccc; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Stellplatz-Sammler</h1>
+  <label><input type="checkbox" id="fStell" checked> Stellplätze</label>
+  <label><input type="checkbox" id="fCamp" checked> Campingplätze</label>
+  <label><input type="checkbox" id="fEigen" checked> Eigene</label>
+  <label><input type="checkbox" id="fKostenlos"> nur kostenlos</label>
+  <label>Suche <input type="text" id="suche" placeholder="Name enthält..."></label>
+  <button id="btnLaden">Plätze hier laden</button>
+  <button id="btnNeu">Eigenen Platz hinzufügen</button>
+  <button id="btnExport">Export</button>
+  <button id="btnImport">Import</button>
+  <input type="file" id="datei" accept=".json,.csv" style="display:none">
+  <span id="status"></span>
+</header>
+<div id="main">
+  <div id="map"></div>
+  <div id="side"><em>Zoome auf ein Gebiet und klicke auf "Plätze hier laden".</em></div>
+</div>
+
+<!-- Formular für eigene Plätze -->
+<div id="formBg"><div id="form">
+  <h2>Eigenen Platz speichern</h2>
+  <label>Name <input type="text" id="fName"></label>
+  <div class="zeile">
+    <label>Quelle <input type="text" id="fQuelle" value="selbst entdeckt"></label>
+    <label>Bewertung <select id="fBew"><option value="0">keine</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+  </div>
+  <div class="zeile">
+    <label>Preis pro Nacht (€, leer = unbekannt) <input type="number" id="fPreis" min="0" step="0.5"></label>
+    <label>Preis gilt Stand <input type="date" id="fPreisDatum"></label>
+  </div>
+  <label>Pluspunkte (ein Punkt pro Zeile) <textarea id="fPlus" rows="3" placeholder="ruhig&#10;Strom vorhanden&#10;Seeblick"></textarea></label>
+  <label>Minuspunkte (ein Punkt pro Zeile) <textarea id="fMinus" rows="3" placeholder="Straßenlärm&#10;schräg&#10;Entsorgung kaputt"></textarea></label>
+  <label>Foto (Bild wird verkleinert im Browser gespeichert) <input type="file" id="fFoto" accept="image/*"></label>
+  <label>oder Foto-Link (Adresse eines Bildes im Internet) <input type="text" id="fFotoUrl" placeholder="https://..."></label>
+  <label>Weitere Notiz <textarea id="fNotiz" rows="2"></textarea></label>
+  <div class="knoepfe"><button id="fAbbruch">Abbrechen</button><button id="fSpeichern"><strong>Speichern</strong></button></div>
+</div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const FARBEN = { stellplatz: '#d9822b', camping: '#2b7bd9', eigen: '#c0392b' };
+const map = L.map('map').setView([51.1, 10.4], 6);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap-Mitwirkende' }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+let osmPlaetze = [];
+let eigene = JSON.parse(localStorage.getItem('eigenePlaetze') || '[]');
+let neuModus = false;
+let neuPos = null;
+let fotoDaten = '';
+
+function speichern() {
+  try { localStorage.setItem('eigenePlaetze', JSON.stringify(eigene)); }
+  catch (e) { alert('Speicher voll. Bitte Export machen und Fotos verkleinern oder weniger Fotos speichern.'); }
+}
+function status(t) { document.getElementById('status').textContent = t; }
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function nurHttp(u) { return /^https?:\/\//i.test(u || '') ? u : ''; }
+
+function abstandMeter(a, b) {
+  const R = 6371000, rad = x => x * Math.PI / 180;
+  const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+  const h = Math.sin(dLat/2)**2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// ---------- Daten aus OpenStreetMap ----------
+async function ladeOSM() {
+  if (map.getZoom() < 9) { status('Bitte weiter hineinzoomen (mindestens Stufe 9).'); return; }
+  const b = map.getBounds();
+  const box = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].join(',');
+  const q = `[out:json][timeout:25];(
+    nwr["tourism"="caravan_site"](${box});
+    nwr["tourism"="camp_site"](${box});
+    nwr["amenity"="parking"]["caravan"="yes"](${box});
+  );out center tags 400;`;
+  status('Lade Daten ...');
+  try {
+    const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q) });
+    const j = await r.json();
+    osmPlaetze = j.elements.map(e => {
+      const t = e.tags || {};
+      const lat = e.lat ?? e.center?.lat, lon = e.lon ?? e.center?.lon;
+      const ausstattung = [
+        t.power_supply === 'yes' ? 'Strom' : '',
+        t.drinking_water === 'yes' ? 'Trinkwasser' : '',
+        t.sanitary_dump_station === 'yes' ? 'Entsorgung' : '',
+        t.toilets === 'yes' ? 'WC' : '',
+        t.shower === 'yes' ? 'Dusche' : '',
+        t.capacity ? t.capacity + ' Plätze' : ''
+      ].filter(Boolean).join(', ');
+      return {
+        id: 'osm' + e.id, lat, lon,
+        name: t.name || (t.tourism === 'camp_site' ? 'Campingplatz (ohne Namen)' : 'Stellplatz (ohne Namen)'),
+        art: t.tourism === 'camp_site' ? 'camping' : 'stellplatz',
+        quelle: 'OpenStreetMap',
+        kostenlos: t.fee === 'no',
+        preisText: t.charge || (t.fee === 'yes' ? 'kostenpflichtig, Preis unbekannt' : t.fee === 'no' ? 'kostenlos' : ''),
+        preisDatum: (t['check_date:fee'] || t.check_date || '').slice(0, 10),
+        foto: nurHttp(t.image),
+        commons: t.wikimedia_commons || '',
+        mapillary: t.mapillary || '',
+        website: nurHttp(t.website || t['contact:website']),
+        notiz: ausstattung
+      };
+    }).filter(p => p.lat && p.lon);
+    status(osmPlaetze.length + ' Plätze geladen.');
+    zeichne();
+  } catch (err) { status('Fehler beim Laden. Später nochmal versuchen.'); }
+}
+
+// Foto von Wikimedia Commons nachladen (nur wenn im OSM-Eintrag verlinkt)
+async function commonsBild(datei) {
+  const titel = datei.startsWith('File:') ? datei : null;
+  if (!titel) return '';
+  try {
+    const u = 'https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&prop=imageinfo&iiprop=url&iiurlwidth=400&titles=' + encodeURIComponent(titel);
+    const j = await (await fetch(u)).json();
+    const seite = Object.values(j.query.pages)[0];
+    return seite.imageinfo?.[0]?.thumburl || '';
+  } catch (e) { return ''; }
+}
+
+// ---------- Anzeige ----------
+function preisHtml(p) {
+  if (!p.preisText && p.preis == null) return '<span class="klein">Preis unbekannt</span>';
+  const text = p.preis != null && p.preis !== '' ? (p.preis == 0 ? 'kostenlos' : p.preis + ' € pro Nacht') : p.preisText;
+  const datum = p.preisDatum ? ` <span class="klein">(Stand ${esc(p.preisDatum)})</span>` : ' <span class="klein">(Datum der Angabe unbekannt, bitte vor Ort prüfen)</span>';
+  return `<span class="preis">${esc(text)}</span>${datum}`;
+}
+
+function popupHtml(p) {
+  let h = `<div class="pop"><strong>${esc(p.name)}</strong><br><span class="klein">Quelle: ${esc(p.quelle || '')}</span>`;
+  if (p.foto) h += `<br><img src="${esc(p.foto)}" alt="Foto" loading="lazy">`;
+  else if (p.commonsUrl) h += `<br><img src="${esc(p.commonsUrl)}" alt="Foto" loading="lazy">`;
+  h += `<br>${preisHtml(p)}`;
+  if (p.bewertung) h += `<br>Bewertung: ${'★'.repeat(p.bewertung)}${'☆'.repeat(5 - p.bewertung)}`;
+  if (p.plus && p.plus.length) h += `<br><span class="plus">+ ${p.plus.map(esc).join('<br>+ ')}</span>`;
+  if (p.minus && p.minus.length) h += `<br><span class="minus">− ${p.minus.map(esc).join('<br>− ')}</span>`;
+  if (p.notiz) h += `<br>${esc(p.notiz)}`;
+  if (p.website) h += `<br><a target="_blank" rel="noopener" href="${esc(p.website)}">Webseite</a>`;
+  if (p.mapillary) h += `<br><a target="_blank" rel="noopener" href="https://www.mapillary.com/app/?pKey=${encodeURIComponent(p.mapillary)}">Straßenfotos (Mapillary)</a>`;
+  h += `<br><a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}">Route planen</a>`;
+  if (p.art === 'eigen') h += `<br><a href="#" onclick="loesche('${p.id}');return false;">Löschen</a>`;
+  return h + '</div>';
+}
+
+function zeichne() {
+  layer.clearLayers();
+  const side = document.getElementById('side');
+  side.innerHTML = '';
+  const suche = document.getElementById('suche').value.toLowerCase();
+  const zeigeStell = document.getElementById('fStell').checked;
+  const zeigeCamp = document.getElementById('fCamp').checked;
+  const zeigeEigen = document.getElementById('fEigen').checked;
+  const nurKostenlos = document.getElementById('fKostenlos').checked;
+
+  let liste = [];
+  if (zeigeEigen) liste.push(...eigene.map(p => ({ ...p, art: 'eigen' })));
+  // Dubletten: OSM-Platz weglassen, wenn eigener Platz näher als 50 m
+  const osmFilter = osmPlaetze.filter(p =>
+    (p.art === 'stellplatz' ? zeigeStell : zeigeCamp) &&
+    !eigene.some(e => abstandMeter(e, p) < 50));
+  liste.push(...osmFilter);
+  liste = liste.filter(p => p.name.toLowerCase().includes(suche));
+  if (nurKostenlos) liste = liste.filter(p => p.kostenlos || p.preis === 0 || p.preis === '0');
+
+  liste.forEach(p => {
+    const m = L.circleMarker([p.lat, p.lon], { radius: 8, color: '#fff', weight: 2, fillColor: FARBEN[p.art], fillOpacity: 0.95 }).addTo(layer);
+    m.bindPopup(() => popupHtml(p), { maxWidth: 280 });
+    // Commons-Foto erst beim Öffnen nachladen
+    m.on('popupopen', async () => {
+      if (p.commons && !p.commonsUrl && !p.foto) {
+        p.commonsUrl = await commonsBild(p.commons);
+        if (p.commonsUrl) m.setPopupContent(popupHtml(p));
+      }
+    });
+    const d = document.createElement('div');
+    d.className = 'item';
+    const preisKurz = p.preis != null && p.preis !== '' ? (p.preis == 0 ? 'kostenlos' : p.preis + ' €') : (p.kostenlos ? 'kostenlos' : '');
+    d.innerHTML = `${esc(p.name)} <span class="tag" style="background:${FARBEN[p.art]}">${p.art === 'eigen' ? 'eigen' : p.art === 'camping' ? 'Camping' : 'Stellplatz'}</span>` +
+      (preisKurz ? ` <span class="klein">${esc(preisKurz)}</span>` : '') +
+      (p.minus && p.minus.length ? ` <span class="minus klein">−${p.minus.length}</span>` : '');
+    d.onclick = () => { map.setView([p.lat, p.lon], 15); m.openPopup(); };
+    side.appendChild(d);
+  });
+  if (!liste.length) side.innerHTML = '<em>Keine Plätze im Filter.</em>';
+}
+
+function loesche(id) {
+  if (!confirm('Diesen Platz löschen?')) return;
+  eigene = eigene.filter(p => p.id !== id);
+  speichern(); zeichne();
+}
+window.loesche = loesche;
+
+// ---------- Eigenen Platz hinzufügen ----------
+document.getElementById('btnNeu').onclick = () => {
+  neuModus = true;
+  status('Klicke jetzt auf die Karte, wo der Platz liegt.');
+};
+map.on('click', e => {
+  if (!neuModus) return;
+  neuModus = false; neuPos = e.latlng; status('');
+  ['fName','fPreis','fPlus','fMinus','fNotiz','fFotoUrl'].forEach(i => document.getElementById(i).value = '');
+  document.getElementById('fQuelle').value = 'selbst entdeckt';
+  document.getElementById('fBew').value = '0';
+  document.getElementById('fPreisDatum').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('fFoto').value = '';
+  fotoDaten = '';
+  document.getElementById('formBg').style.display = 'flex';
+});
+document.getElementById('fAbbruch').onclick = () => document.getElementById('formBg').style.display = 'none';
+
+// Foto verkleinern (max. 800 Pixel Breite), damit der Browser-Speicher reicht
+document.getElementById('fFoto').onchange = ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    const s = Math.min(1, 800 / img.width);
+    const c = document.createElement('canvas');
+    c.width = img.width * s; c.height = img.height * s;
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    fotoDaten = c.toDataURL('image/jpeg', 0.7);
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(f);
+};
+
+document.getElementById('fSpeichern').onclick = () => {
+  const name = document.getElementById('fName').value.trim();
+  if (!name) { alert('Bitte einen Namen eingeben.'); return; }
+  const preisRoh = document.getElementById('fPreis').value;
+  const zeilen = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+  eigene.push({
+    id: 'e' + Date.now(), lat: neuPos.lat, lon: neuPos.lng, name,
+    quelle: document.getElementById('fQuelle').value.trim(),
+    bewertung: parseInt(document.getElementById('fBew').value, 10) || 0,
+    preis: preisRoh === '' ? null : parseFloat(preisRoh),
+    preisDatum: preisRoh === '' ? '' : document.getElementById('fPreisDatum').value,
+    plus: zeilen('fPlus'), minus: zeilen('fMinus'),
+    foto: fotoDaten || nurHttp(document.getElementById('fFotoUrl').value.trim()),
+    notiz: document.getElementById('fNotiz').value.trim()
+  });
+  speichern();
+  document.getElementById('formBg').style.display = 'none';
+  status('Platz gespeichert.'); zeichne();
+};
+
+document.getElementById('btnLaden').onclick = ladeOSM;
+['fStell','fCamp','fEigen','fKostenlos'].forEach(id => document.getElementById(id).onchange = zeichne);
+document.getElementById('suche').oninput = zeichne;
+
+// ---------- Export ----------
+document.getElementById('btnExport').onclick = () => {
+  const fmt = confirm('OK = JSON (komplette Sicherung inkl. Fotos), Abbrechen = CSV (Tabelle ohne Fotos)') ? 'json' : 'csv';
+  let inhalt, typ;
+  if (fmt === 'json') { inhalt = JSON.stringify(eigene, null, 2); typ = 'application/json'; }
+  else {
+    const kopf = 'name,lat,lon,quelle,bewertung,preis,preisdatum,plus,minus,foto,notiz';
+    const zeilen = eigene.map(p => [p.name, p.lat, p.lon, p.quelle, p.bewertung || '', p.preis ?? '', p.preisDatum || '', (p.plus || []).join(' | '), (p.minus || []).join(' | '), (p.foto || '').startsWith('http') ? p.foto : '', p.notiz || ''].map(v => '"' + String(v).replace(/"/g, '""') + '"').join(','));
+    inhalt = [kopf, ...zeilen].join('\n'); typ = 'text/csv';
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([inhalt], { type: typ }));
+  a.download = 'meine-stellplaetze.' + fmt;
+  a.click();
+};
+
+// ---------- Import (JSON oder CSV) ----------
+document.getElementById('btnImport').onclick = () => document.getElementById('datei').click();
+document.getElementById('datei').onchange = async ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  const text = await f.text();
+  let neu = [];
+  try {
+    if (f.name.endsWith('.json')) neu = JSON.parse(text);
+    else neu = parseCSV(text);
+  } catch (e) { status('Datei konnte nicht gelesen werden.'); return; }
+  let n = 0;
+  neu.forEach(p => {
+    const lat = parseFloat(p.lat), lon = parseFloat(p.lon);
+    if (isNaN(lat) || isNaN(lon) || !p.name) return;
+    if (eigene.some(e => abstandMeter(e, { lat, lon }) < 50)) return; // Dublette
+    const liste = v => Array.isArray(v) ? v : String(v || '').split('|').map(s => s.trim()).filter(Boolean);
+    const preisZahl = parseFloat(p.preis);
+    eigene.push({
+      id: 'e' + Date.now() + Math.random().toString(36).slice(2, 6), lat, lon, name: p.name,
+      quelle: p.quelle || 'Import',
+      bewertung: parseInt(p.bewertung || 0, 10) || 0,
+      preis: isNaN(preisZahl) ? null : preisZahl,
+      preisDatum: p.preisDatum || p.preisdatum || '',
+      plus: liste(p.plus), minus: liste(p.minus),
+      foto: p.foto && (p.foto.startsWith('data:image') || nurHttp(p.foto)) ? p.foto : '',
+      notiz: p.notiz || ''
+    });
+    n++;
+  });
+  speichern(); zeichne(); status(n + ' Plätze importiert.');
+  ev.target.value = '';
+};
+
+function parseCSV(text) {
+  const zeilen = []; let z = [], feld = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"' && text[i+1] === '"') { feld += '"'; i++; } else if (c === '"') q = false; else feld += c; }
+    else if (c === '"') q = true;
+    else if (c === ',' || c === ';') { z.push(feld); feld = ''; }
+    else if (c === '\n') { z.push(feld); zeilen.push(z); z = []; feld = ''; }
+    else if (c !== '\r') feld += c;
+  }
+  if (feld || z.length) { z.push(feld); zeilen.push(z); }
+  const kopf = zeilen.shift().map(h => h.trim().toLowerCase());
+  return zeilen.map(r => Object.fromEntries(kopf.map((h, i) => [h, r[i]])));
+}
+
+zeichne();
+</script>
+</body>
+</html>
